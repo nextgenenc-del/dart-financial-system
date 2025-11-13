@@ -1,13 +1,8 @@
 {
   "name": "dart-financial-system",
   "version": "1.0.0",
-  "description": "한국 건설사 재무 데이터 수집 시스템",
-  "scripts": {
-    "dev": "vercel dev"
-  },
-  "author": "your-name",
-  "license": "MIT",
+  "type": "module",
   "engines": {
-    "node": "22.x"
+    "node": "20.x"
   }
 }
