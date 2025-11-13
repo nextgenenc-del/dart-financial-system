@@ -1,112 +1,123 @@
-// DART API와 통신하는 서버리스 함수
-
+// api/dart.js
 export default async function handler(req, res) {
-  // CORS 설정
+  // CORS 헤더 설정
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
+  // OPTIONS 요청 처리
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  const { company, year, reportType, fsDiv } = req.query;
-  
-  // 환경변수에서 API 키 가져오기
-  const API_KEY = process.env.DART_API_KEY;
-  
-  if (!API_KEY) {
-    return res.status(500).json({ 
-      error: 'API 키가 설정되지 않았습니다.' 
-    });
-  }
-
-  if (!company || !year) {
-    return res.status(400).json({ 
-      error: '필수 파라미터가 누락되었습니다.' 
-    });
+    return res.status(200).end();
   }
 
   try {
-    console.log('DART API 호출 시작:', { company, year, reportType, fsDiv });
+    const { company, year, reportType = '11011', fsDiv = 'CFS' } = req.query;
     
-    // DART Open API 호출
-    const dartUrl = `https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json`;
+    // API 키 확인
+    const API_KEY = process.env.DART_API_KEY;
+    
+    if (!API_KEY) {
+      return res.status(200).json({ 
+        error: true,
+        message: 'DART API 키가 설정되지 않았습니다. Vercel 환경변수를 확인해주세요.',
+        status: '999'
+      });
+    }
+
+    // 파라미터 확인
+    if (!company || !year) {
+      return res.status(200).json({ 
+        error: true,
+        message: '필수 파라미터(company, year)가 누락되었습니다.',
+        status: '100'
+      });
+    }
+
+    // DART API 호출
+    const dartUrl = 'https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json';
     const params = new URLSearchParams({
       crtfc_key: API_KEY,
       corp_code: company,
       bsns_year: year,
-      reprt_code: reportType || '11011',  // 기본값: 사업보고서
-      fs_div: fsDiv || 'CFS'               // 기본값: 연결재무제표
+      reprt_code: reportType,
+      fs_div: fsDiv
     });
 
-    const response = await fetch(`${dartUrl}?${params}`);
-    const data = await response.json();
+    const dartResponse = await fetch(`${dartUrl}?${params}`);
+    const data = await dartResponse.json();
     
-    console.log('DART API 응답:', data.status, data.message);
-    
-    // 데이터 가공
-    if (data.status === '000' && data.list) {
-      // 주요 계정과목 추출
-      const processedData = {
+    // 응답 처리
+    if (data.status === '000') {
+      // 성공
+      const summary = data.list ? extractSummary(data.list) : {};
+      
+      return res.status(200).json({
         status: '000',
         message: '정상 조회',
         company_code: company,
         year: year,
-        list: data.list,
-        summary: extractFinancialSummary(data.list)
+        list: data.list || [],
+        summary: summary
+      });
+    } else {
+      // 에러 상태
+      const errorMessages = {
+        '010': 'API 키가 등록되지 않았습니다',
+        '011': '사용할 수 없는 API 키입니다',
+        '013': '조회된 데이터가 없습니다',
+        '020': '요청 제한을 초과했습니다',
+        '100': '필수 파라미터가 누락되었습니다',
+        '800': '시스템 점검 중입니다',
+        '900': '시스템 장애가 발생했습니다'
       };
       
-      return res.status(200).json(processedData);
-    } else {
       return res.status(200).json({
         status: data.status,
-        message: data.message || '데이터가 없습니다.',
+        message: errorMessages[data.status] || data.message || '알 수 없는 오류',
         company_code: company,
-        year: year,
-        list: []
+        year: year
       });
     }
     
   } catch (error) {
-    console.error('DART API 호출 오류:', error);
-    return res.status(500).json({ 
-      error: '서버 오류가 발생했습니다.',
+    console.error('Server error:', error);
+    return res.status(200).json({ 
+      error: true,
+      message: '서버 오류가 발생했습니다',
       details: error.message 
     });
   }
 }
 
-// 재무 요약 정보 추출 함수
-function extractFinancialSummary(list) {
-  const findAccount = (keywords) => {
+function extractSummary(list) {
+  const findAmount = (keywords) => {
     for (const keyword of keywords) {
-      const item = list.find(i => 
-        i.account_nm && i.account_nm.includes(keyword)
+      const item = list.find(item => 
+        item.account_nm && item.account_nm.includes(keyword)
       );
-      if (item) return parseInt(item.thstrm_amount) || 0;
+      if (item && item.thstrm_amount) {
+        const amount = parseInt(item.thstrm_amount.replace(/,/g, ''));
+        return isNaN(amount) ? null : amount;
+      }
     }
     return null;
   };
 
+  const totalAssets = findAmount(['자산총계', '자산 총계']);
+  const totalLiabilities = findAmount(['부채총계', '부채 총계']);
+  const totalEquity = findAmount(['자본총계', '자본 총계']);
+  const netIncome = findAmount(['당기순이익', '순이익']);
+  
   return {
-    // 손익계산서 항목
-    sales: findAccount(['매출액', '수익', '영업수익']),
-    operatingProfit: findAccount(['영업이익', '영업손익']),
-    netIncome: findAccount(['당기순이익', '당기순손익']),
-    
-    // 재무상태표 항목
-    totalAssets: findAccount(['자산총계', '자산 총계']),
-    currentAssets: findAccount(['유동자산']),
-    nonCurrentAssets: findAccount(['비유동자산']),
-    totalLiabilities: findAccount(['부채총계', '부채 총계']),
-    currentLiabilities: findAccount(['유동부채']),
-    nonCurrentLiabilities: findAccount(['비유동부채']),
-    totalEquity: findAccount(['자본총계', '자본 총계']),
-    
-    // 현금흐름표 항목
-    operatingCashFlow: findAccount(['영업활동현금흐름', '영업활동으로인한현금흐름']),
-    investingCashFlow: findAccount(['투자활동현금흐름', '투자활동으로인한현금흐름']),
-    financingCashFlow: findAccount(['재무활동현금흐름', '재무활동으로인한현금흐름'])
+    sales: findAmount(['매출액', '매출', '수익']),
+    operatingProfit: findAmount(['영업이익']),
+    netIncome: netIncome,
+    totalAssets: totalAssets,
+    totalLiabilities: totalLiabilities,
+    totalEquity: totalEquity,
+    debtRatio: totalAssets && totalLiabilities ? 
+      ((totalLiabilities / totalAssets) * 100).toFixed(2) : null,
+    roe: totalEquity && netIncome ? 
+      ((netIncome / totalEquity) * 100).toFixed(2) : null
   };
 }
